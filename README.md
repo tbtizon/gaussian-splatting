@@ -122,6 +122,273 @@ If you can afford the disk space, we recommend using our environment files for s
 
 Some users experience problems building the submodules on Windows (```cl.exe: File not found``` or similar). Please consider the workaround for this problem from the FAQ.
 
+### Local Reproduction Setup (Windows / RTX 4050 Laptop GPU)
+
+> **Project-specific note:** This section documents the reproducible local setup
+> selected for this machine. It is not part of the authors' original reference
+> setup. The upstream `environment.yml` is intentionally left unchanged for
+> provenance.
+
+#### Source snapshot
+
+The branch name is convenient for development, but the commit and submodule
+revisions below are the authoritative source identifiers for reproducibility.
+At the time this record was added, `README.md` was the only tracked change from
+the upstream checkout; no optimizer, renderer, metric, or CUDA source file had
+been changed. Building the local extensions may leave untracked `build` and
+`.egg-info` artifacts inside their submodule directories; those generated files
+are not part of the recorded source changes.
+
+| Component | Recorded revision |
+| --- | --- |
+| Repository branch | `main` |
+| Upstream base commit | `54c035f7834b564019656c3e3fcc3646292f727d` |
+| `SIBR_viewers` | `d8856f60c5384cc1975439193bb627d77d917d77` |
+| `submodules/diff-gaussian-rasterization` | `9c5c2028f6fbee2be239bc4c9421ff894fe4fbe0` |
+| Rasterizer `third_party/glm` | `5c46b9c07008ae65cb81ab79cd677ecc1934b903` |
+| `submodules/fused-ssim` | `1272e21a282342e89537159e4bad508b19b34157` |
+| `submodules/simple-knn` | `86710c2d4b46680c02301765dd79e465819c8f19` |
+
+Verify the snapshot from the repository root before installing anything:
+
+```powershell
+git status
+git branch --show-current
+git rev-parse HEAD
+git submodule status --recursive
+```
+
+A leading `-` in `git submodule status` means that a submodule is not
+initialized. In that case, run:
+
+```powershell
+git submodule update --init --recursive
+```
+
+#### Verified local machine and toolchain
+
+| Item | Recorded value |
+| --- | --- |
+| Operating system | Windows, build `26200.8655` |
+| GPU | NVIDIA GeForce RTX 4050 Laptop GPU |
+| GPU memory | 6,141 MiB |
+| Compute capability | 8.9 (Ada) |
+| NVIDIA driver | `610.74` |
+| CUDA compiler toolkit | CUDA 11.8 (`nvcc` 11.8.89) |
+| C++ toolchain | Visual Studio Build Tools 2019 16.11.50; MSVC 19.29.30159, x64 |
+| Selected environment manager | Conda 25.9.1 via Miniconda at `$HOME\miniconda3` |
+
+CUDA 11.8 is retained because it is the first CUDA toolkit with native support
+for Ada compute capability 8.9, and it matches the locally installed compiler
+toolkit. See NVIDIA's [Ada compatibility guide](https://docs.nvidia.com/cuda/ada-compatibility-guide/index.html#building-applications-with-cuda-toolkit-11-8).
+
+#### Compatibility environment and rationale
+
+The upstream `environment.yml` pins Python 3.7.13, PyTorch 1.12.1, and a CUDA
+11.6 runtime. Those versions are preserved in that file as the historical
+reference, but they predate native RTX 40-series/Ada support. This local setup
+therefore uses Python 3.10, PyTorch 2.0.1, and the CUDA 11.8 PyTorch build. The
+PyTorch versions are taken from the official
+[previous-version installation matrix](https://pytorch.org/get-started/previous-versions/).
+
+This compatibility change may produce numerical results that differ from the
+paper or from the authors' original environment. It should be treated as a
+reproduction of the current code path on the recorded hardware, not as a claim
+of bit-for-bit reproduction of the paper's tables.
+
+NumPy is pinned to 1.26.4 because pip initially resolved NumPy 2.2.6, with which
+PyTorch 2.0.1 reported that NumPy was unavailable when converting an array to a
+tensor. Pinning NumPy restored the bridge, but `plyfile` 1.1.4 required NumPy
+2.0 or newer, so `plyfile` is pinned to 1.1.3, whose
+[package metadata](https://pypi.org/pypi/plyfile/1.1.3/json) accepts NumPy 1.21
+or newer. A new, uniquely named environment avoids mixing this resolved state
+with the other Conda installations and environments on the machine.
+
+#### PowerShell session preparation
+
+Run the following commands from the repository root in a new PowerShell
+terminal. The execution-policy change applies only to the current process.
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass -Force
+
+& "$HOME\miniconda3\shell\condabin\conda-hook.ps1"
+
+Import-Module "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+
+Enter-VsDevShell `
+  -VsInstallPath "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools" `
+  -SkipAutomaticLocation `
+  -DevCmdArguments "-arch=amd64 -host_arch=amd64"
+
+$env:DISTUTILS_USE_SDK = "1"
+$env:CUDA_HOME = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.8"
+$env:CUDA_PATH = $env:CUDA_HOME
+$env:Path = "$env:CUDA_HOME\bin;$env:Path"
+$env:TORCH_CUDA_ARCH_LIST = "8.9"
+
+where.exe cl
+where.exe nvcc
+nvcc --version
+```
+
+The upstream command `SET DISTUTILS_USE_SDK=1` uses Command Prompt syntax. The
+`$env:DISTUTILS_USE_SDK = "1"` form above is the PowerShell equivalent.
+
+#### Create the isolated environment
+
+The environment name includes the short repository revision to make its scope
+clear. Loading the explicit Miniconda hook ensures that the environment belongs
+to the selected Miniconda installation. `--override-channels` makes the Conda
+portion resolve only from the explicitly listed `conda-forge` channel.
+
+```powershell
+conda create `
+  --name gs_repro_54c035f `
+  --channel conda-forge `
+  --override-channels `
+  python=3.10 `
+  numpy=1.26.4 `
+  pip=24 `
+  setuptools=69 `
+  wheel `
+  ninja
+
+conda activate gs_repro_54c035f
+```
+
+Install the official PyTorch CUDA 11.8 packages and the remaining Python
+dependencies:
+
+```powershell
+python -m pip install `
+  torch==2.0.1 `
+  torchvision==0.15.2 `
+  torchaudio==2.0.2 `
+  --index-url https://download.pytorch.org/whl/cu118
+
+python -m pip install `
+  numpy==1.26.4 `
+  plyfile==1.1.3 `
+  tqdm `
+  opencv-python==4.10.0.84 `
+  joblib
+```
+
+Build the three local CUDA extensions one at a time so that a failing component
+is unambiguous:
+
+```powershell
+python -m pip install .\submodules\diff-gaussian-rasterization
+python -m pip install .\submodules\simple-knn
+python -m pip install .\submodules\fused-ssim
+```
+
+#### Verification
+
+After installation, verify CUDA, NumPy interoperability, and all three compiled
+extensions:
+
+```powershell
+python -c "import numpy as np, torch; print('PyTorch:', torch.__version__); print('CUDA:', torch.version.cuda); print('CUDA available:', torch.cuda.is_available()); print('GPU:', torch.cuda.get_device_name(0)); print('NumPy:', np.__version__); print(torch.from_numpy(np.zeros(1, dtype=np.float32))); import diff_gaussian_rasterization, simple_knn, fused_ssim; print('Extensions: OK')"
+```
+
+The expected key values are PyTorch 2.0.1, CUDA 11.8, NumPy 1.26.4, the RTX
+4050 Laptop GPU, and `Extensions: OK`. After this check succeeds, save the final
+resolved environment and toolchain rather than relying only on the intended
+package commands:
+
+```powershell
+$recordDate = Get-Date -Format "yyyy-MM-dd"
+$recordDirectory = ".\reproduction-records\$recordDate"
+New-Item -ItemType Directory -Force $recordDirectory | Out-Null
+
+conda list --explicit | Set-Content "$recordDirectory\conda-explicit.txt"
+python -m pip freeze | Set-Content "$recordDirectory\pip-freeze.txt"
+git rev-parse HEAD | Set-Content "$recordDirectory\git-commit.txt"
+git submodule status --recursive | Set-Content "$recordDirectory\git-submodules.txt"
+nvidia-smi | Set-Content "$recordDirectory\nvidia-smi.txt"
+nvcc --version 2>&1 | Set-Content "$recordDirectory\nvcc-version.txt"
+```
+
+For every training or evaluation run, also record the dataset and scene names,
+download source and checksum, exact command and flags, output path, elapsed
+time, and the resulting PSNR, SSIM, and LPIPS values.
+
+#### Benchmark dataset
+
+Keep benchmark data outside the Git working tree so source, generated models,
+and large immutable inputs remain separate. The local reproduction uses the
+authors' [Tanks & Temples + Deep Blending COLMAP archive](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/datasets/input/tandt_db.zip),
+stored beside the fresh clone with the following layout:
+
+```text
+<3DGS-workspace>\
+|-- datasets\
+|   |-- tandt_db.zip
+|   `-- tandt_db\
+`-- gaussian-splatting\
+    `-- gaussian-splatting\
+```
+
+The SHA-256 recorded for the downloaded archive used here is
+`816E62F22A161ABBFE841D2A6B10CDF036E297C9FA289B3BFEEE9C6EC526D7E1`.
+The extracted archive contains four valid COLMAP scene roots: `db\drjohnson`,
+`db\playroom`, `tandt\train`, and `tandt\truck`. Use `tandt\truck` for the
+first low-resource end-to-end smoke test.
+
+#### Reduced local end-to-end evaluation
+
+Run the stages separately so a training, rendering, or metric failure is not
+hidden by later commands. This 100-iteration, one-eighth-resolution run only
+validates the pipeline; it is not comparable to the paper's 30,000-iteration
+results, and it ends before the default densification start at iteration 500.
+
+```powershell
+$scene = (Resolve-Path "..\..\datasets\tandt_db\tandt\truck").Path
+$model = ".\output\truck-smoke-i100-r8"
+
+python train.py `
+  -s "$scene" `
+  -m "$model" `
+  --eval `
+  --iterations 100 `
+  -r 8 `
+  --data_device cpu `
+  --test_iterations -1 `
+  --save_iterations 100 `
+  --disable_viewer
+
+python render.py -m "$model" --iteration 100 --skip_train
+python metrics.py -m "$model"
+```
+
+The expected outputs are the trained model at
+`point_cloud\iteration_100\point_cloud.ply`, withheld-view renders under
+`test\ours_100\renders`, and the metric summaries `results.json` and
+`per_view.json`, all inside the model directory.
+
+On 2026-07-14, this configuration produced 32 rendered/ground-truth test pairs
+in `output\truck-smoke-i100-r8` with SSIM `0.5437074303627014`, PSNR
+`15.564620971679688`, and LPIPS `0.4340797960758209`. These measurements confirm
+that the end-to-end evaluation machinery works; they are not quality targets or
+paper-comparable results because of the deliberately reduced resolution and
+iteration count.
+
+#### Hardware limitation
+
+The local GPU has 6 GB of VRAM, while the reference implementation recommends
+24 GB for paper-evaluation-quality training. Full-quality training on this
+machine is therefore not claimed. Reduced resolution, shorter training, or
+less aggressive densification may make local tests possible, but these changes
+affect quality and must be reported with the results. Exact full-scale training
+should use a higher-memory GPU; the authors' evaluation images or pretrained
+models can be used to validate the evaluation pipeline without retraining.
+
+The optimizer is sufficient for training and metric evaluation. Building the
+SIBR real-time viewer is a separate step and is deferred until the optimizer
+environment has passed the verification command above.
+
 ### Running
 
 To run the optimizer, simply use
