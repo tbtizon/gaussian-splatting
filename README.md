@@ -385,9 +385,102 @@ affect quality and must be reported with the results. Exact full-scale training
 should use a higher-memory GPU; the authors' evaluation images or pretrained
 models can be used to validate the evaluation pipeline without retraining.
 
-The optimizer is sufficient for training and metric evaluation. Building the
-SIBR real-time viewer is a separate step and is deferred until the optimizer
-environment has passed the verification command above.
+#### Prebuilt SIBR real-time viewer
+
+The interactive virtual camera uses the real-time SIBR viewer. On Windows, use
+the authors' prebuilt viewer archive instead of committing its binaries to this
+repository or rebuilding SIBR from source. Keep both the archive and extracted
+files beside the clones in `<3DGS-workspace>\tools`. The prebuilt viewer is a
+standalone application and does not require the Conda environment to be active.
+
+##### Why the viewer binaries are not included in a clone
+
+`git clone --recursive` retrieves files tracked by the main repository and the
+pinned source revisions of its submodules. It retrieves the viewer source under
+`SIBR_viewers`, but the official prebuilt Windows archive is a separate download;
+it is not a tracked file or submodule in this repository. A clone therefore does
+not automatically contain `bin\SIBR_gaussianViewer_app.exe`.
+
+For this reproduction, `viewers.zip` and its extracted directory are stored in
+the sibling `<3DGS-workspace>\tools` directory, outside the Git working tree.
+Git commits cannot include files outside their working tree. This separation is
+intentional: it avoids adding about 224 MB of externally distributed binaries
+to the source history and keeps a fresh clone clean. Consequently, someone who
+clones this branch should expect to receive these instructions and the pinned
+SIBR source, but not the prebuilt executable. They must run the download and
+extraction commands below once on their own machine; the recorded checksum
+verifies that the separately downloaded archive matches the one used here.
+
+The official archive downloaded on 2026-07-15 was 61,475,498 bytes and had
+SHA-256
+`484246C650AA46A59AA1E5B976C288AED8DF39448F572D4F3F00E97239BDEED2`.
+Download, verify, and extract that recorded artifact from the repository root:
+
+```powershell
+$viewerUri = "https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/binaries/viewers.zip"
+$workspace = (Resolve-Path "..\..").Path
+$tools = Join-Path $workspace "tools"
+$viewerArchive = Join-Path $tools "viewers.zip"
+$viewerRoot = Join-Path $tools "sibr-viewers-54c035f"
+$expectedSha256 = "484246C650AA46A59AA1E5B976C288AED8DF39448F572D4F3F00E97239BDEED2"
+
+New-Item -ItemType Directory -Force $tools | Out-Null
+Invoke-WebRequest -Uri $viewerUri -OutFile $viewerArchive
+
+$actualSha256 = (Get-FileHash -LiteralPath $viewerArchive -Algorithm SHA256).Hash
+if ($actualSha256 -ne $expectedSha256) {
+    throw "Unexpected SIBR viewer archive SHA-256: $actualSha256"
+}
+if (Test-Path -LiteralPath $viewerRoot) {
+    throw "Viewer destination already exists: $viewerRoot"
+}
+
+Expand-Archive -LiteralPath $viewerArchive -DestinationPath $viewerRoot
+Test-Path (Join-Path $viewerRoot "bin\SIBR_gaussianViewer_app.exe")
+```
+
+The final command should print `True`. On the recorded machine the archive
+expanded to 129 files (163,244,757 bytes), and no additional packages were
+needed because CUDA 11.8 and the Visual C++ x64 runtime were already installed.
+
+Use `SIBR_gaussianViewer_app.exe` for a freely movable camera over a completed
+model. The similarly named `SIBR_remoteGaussian_app.exe` is the network viewer
+for observing a training process. Launch the 100-iteration smoke-test model as
+follows:
+
+```powershell
+$viewerRoot = (Resolve-Path "..\..\tools\sibr-viewers-54c035f").Path
+$modelRoot = (Resolve-Path ".\output\truck-smoke-i100-r8").Path
+
+Push-Location $viewerRoot
+try {
+    & ".\bin\SIBR_gaussianViewer_app.exe" -m $modelRoot --iteration 100
+}
+finally {
+    Pop-Location
+}
+```
+
+To view the longer local run, replace the model and iteration values:
+
+```powershell
+$viewerRoot = (Resolve-Path "..\..\tools\sibr-viewers-54c035f").Path
+$modelRoot = (Resolve-Path ".\output\truck-i3000-r8").Path
+
+Push-Location $viewerRoot
+try {
+    & ".\bin\SIBR_gaussianViewer_app.exe" -m $modelRoot --iteration 3000
+}
+finally {
+    Pop-Location
+}
+```
+
+On a hybrid-GPU laptop, configure the viewer executable to use the high-
+performance NVIDIA GPU so OpenGL and CUDA use the same device. If CUDA/OpenGL
+interoperability still fails, append `--no_interop`. The 100-iteration model is
+expected to look substantially rougher than the 3,000-iteration model; its role
+is only to verify the pipeline.
 
 ### Running
 
